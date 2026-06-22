@@ -42,14 +42,14 @@ datasets:
     io_backend:
       type: disk
 
-  test_5:
-    name: Manga109
-    type: PairedImageDataset
-    dataroot_gt: datasets/SR/Manga109/HR
-    dataroot_lq: datasets/SR/Manga109/LR_bicubic/X4
-    filename_tmpl: '{}_LRBI_x4'
-    io_backend:
-      type: disk
+  # test_5:
+  #   name: Manga109
+  #   type: PairedImageDataset
+  #   dataroot_gt: datasets/SR/Manga109/HR
+  #   dataroot_lq: datasets/SR/Manga109/LR_bicubic/X4
+  #   filename_tmpl: '{}_LRBI_x4'
+  #   io_backend:
+  #     type: disk
 
 # network structure
 network_g:

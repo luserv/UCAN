@@ -9,7 +9,7 @@ lmdb
 tensorboard
 timm
 einops
-pywt
+PyWavelets
 matplotlib
 torch
 torchvision
