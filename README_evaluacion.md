@@ -3,6 +3,64 @@
 
 ---
 
+## 0. Diagrama del paper (explicación inicial)
+
+Mostrar la **Figura 3 del paper** (arquitectura completa de UCAN). Explicar de arriba a abajo:
+
+### a) Vista general — Broad Effective Receptive Field Group (BERFG)
+
+```
+Imagen LR → Conv3×3 → [Sharing Block (SB)] → [Receiving Block (RB)] → Upsample → Imagen SR
+```
+
+- **Sharing Block (SB):** HPA → SHA ×4 → LKD → ESA (genera atención)
+- **Receiving Block (RB):** HPA → RHA ×4 → LKD → ESA (reusa atención del SB)
+
+### b) High Performance Attention (HPA)
+
+```
+Entrada → ConvMLP (kernel 7) → Flash Attention (ventana 32×32) → salida
+```
+
+Flash Attention evita construir la matriz de atención completa, reduciendo memoria y costo.
+
+### c) Shared & Received Hybrid Attention (SHA / RHA) — Figura 3a
+
+```
+SHA: Window-MHSA (genera attn_map) → SDFL (genera QK)
+RHA: Window-MHSA (REUSA attn_map) → DFRL (REUSA QK)
+```
+
+### d) Dual Fusion Layer — expansión de Figura 3a
+
+```
+Q, K, V → mitad de canales (C/2)
+  ├─ Rama espacial (HgA): ϕ(Q)(ϕ(K)ᵀV) + DWConv → atención lineal con Hedgehog
+  └─ Rama canales (CA): softmax(QᵀK)V → atención sobre dimensiones de canal
+  └─ Concat → salida
+```
+
+### e) Large Kernel Distillation (LKD) — Figura 3b
+
+```
+Entrada → Split
+  ├─ Canales finos (C/4) → Triple Feature Extraction (Channel + Local + Large Kernel)
+  └─ Canales gruesos (3C/4) → bypass
+  └─ Concat → salida
+```
+
+### f) Conexión semi-compartida (clave del paper)
+
+```
+SB (comparte) → attn_map, qk_map → RB (recibe y reusa)
+```
+
+Esto reduce ~50% del costo de atención sin perder rendimiento.
+
+**En tu video di:** *"Este es el diagrama del paper. UCAN se compone de un Sharing Block que genera atención y un Receiving Block que la reusa. Cada bloque tiene HPA con Flash Attention para ventanas grandes, Hybrid Attention con atención local por ventanas y global con Hedgehog, y Large Kernel Distillation para refinar texturas."*
+
+---
+
 ## 1. Modelo propuesto e implementación del módulo Transformer
 
 ### Arquitectura general
