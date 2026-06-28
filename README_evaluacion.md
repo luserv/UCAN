@@ -7,7 +7,7 @@
 
 ### Arquitectura general
 
-UCAN (**U**nified **C**onvolutional **A**ttention **N**etwork) es una red híbrida CNN-Transformer para super-resolución de imágenes ligera (_lightweight_). Combina atención por ventanas (Transformer), atención linear global y bloques convolucionales de kernel grande.
+UCAN (**U**nified **C**onvolutional **A**ttention **N**etwork) es una red híbrida CNN (**C**onvolutional **N**eural **N**etwork)-Transformer para super-resolución de imágenes ligera (_lightweight_). Combina atención por ventanas (Transformer), atención linear global y bloques convolucionales de kernel grande.
 
 **Archivo principal:** `basicsr/archs/ucan_arch.py` (1497 líneas)
 
@@ -15,12 +15,12 @@ UCAN (**U**nified **C**onvolutional **A**ttention **N**etwork) es una red híbri
 
 | Componente | Clase | Línea | Descripción |
 |---|---|---|---|
-| **Window-MHSA** | `WindowsAttention` | 759 | Multi-head self-attention con ventana 16×16 y sesgo de posición relativa |
-| **Shared Window-MHSA** | `SharedWindowsAttention` | 822 | Reusa mapa de atención de un RG anterior (ahorra cómputo) |
-| **Dual Fusion Layer (SDFL)** | `SDFL` | 546 | Atención dual: rama espacial (Hedgehog) + rama canales (softmax) |
-| **Dual Fusion Layer (DFRL)** | `DFRL` | 642 | Versión que reusa QK de un RG anterior |
-| **High Performance Attention** | `WindowsAttention(flash=True)` | 1003 | Flash Attention con ventana 32×32 |
-| **Rotary Position Embedding** | `RotaryEmbedding` | 42 | Codificación posicional rotatoria (RoPE) |
+| **W-MHSA (Window Multi-Head Self-Attention)** | `WindowsAttention` | 759 | Atención propia multi-cabeza con ventana 16×16 y sesgo de posición relativa |
+| **Shared W-MHSA** | `SharedWindowsAttention` | 822 | Reusa mapa de atención de un RG anterior (ahorra cómputo) |
+| **SDFL (Self Dual Fusion Layer)** | `SDFL` | 546 | Atención dual: rama espacial (Hedgehog) + rama canales (softmax) |
+| **DFRL (Dual Fusion Reuse Layer)** | `DFRL` | 642 | Versión que reusa QK de un RG anterior |
+| **HPA (High Performance Attention)** | `WindowsAttention(flash=True)` | 1003 | Flash Attention con ventana 32×32 |
+| **RoPE (Rotary Position Embedding)** | `RotaryEmbedding` | 42 | Codificación posicional rotatoria |
 | **FourierEmbedding** | `FourierEmbedding` | 123 | RoPE + mezcla aprendible de frecuencias |
 
 ### Flujo completo (4 Residual Groups con atención semi-compartida)
@@ -28,23 +28,23 @@ UCAN (**U**nified **C**onvolutional **A**ttention **N**etwork) es una red híbri
 ```
 Entrada → conv_first → patch_embed → tokens 1D
 
-  RG1 [share='N'] → genera attn_map y qk_map NUEVOS
+  RG (Residual Group) 1 [share='N'] → genera attn_map y qk_map NUEVOS
   RG2 [share='F'] → REUSA attn_map y qk_map de RG1
   RG3 [share='N'] → genera attn_map y qk_map NUEVOS
   RG4 [share='F'] → REUSA attn_map y qk_map de RG3
 
   → norm → patch_unembed → conv_after_body + residual global
-  → UpsampleOneStep (PixelShuffle ×4) → salida SR
+  → UpsampleOneStep (PixelShuffle ×4) → salida SR (Super-Resolución)
 ```
 
 ### HybridBlock (unidad base del Transformer)
 
 Cada HybridBlock (`ucan_arch.py:854`) contiene:
 
-1. **Parte 1 — Window-MHSA** (ventana 16×16): atención local por ventanas + MLP (SGFN)
+1. **Parte 1 — W-MHSA (Window Multi-Head Self-Attention)** (ventana 16×16): atención local por ventanas + MLP (Multi-Layer Perceptron) implementado como **SGFN (Spatial-Gate Feedforward Network)**
 2. **Parte 2 — Dual Fusion Layer**: 
-   - *Spatial branch*: Hedgehog Attention — `ω(Q)ω(K)ᵀ V` con DWConv, evita colapso de rango
-   - *Channel branch*: `softmax(QᵀK)V` — atención sobre canales
+   - *Rama espacial*: Hedgehog Attention — `ω(Q)ω(K)ᵀ V` con **DWConv (Depthwise Convolution)**, evita colapso de rango
+   - *Rama de canales*: `softmax(QᵀK)V` — atención sobre canales
 3. **Scale + residual connections** con `layer_scale = 1e-4`
 
 ### ¿Cómo señalar la implementación del Transformer en el código?
@@ -66,6 +66,20 @@ class WindowsAttention(nn.Module):
 ```
 Sigue la fórmula estándar: `Attention(Q,K,V) = softmax(QK^T/√d + bias) V`
 
+**QKV** son las 3 matrices del mecanismo de atención:
+- **Q (Query / Consulta):** representa lo que cada token "pregunta"
+- **K (Key / Clave):** representa lo que cada token "ofrece" como relevancia
+- **V (Value / Valor):** representa la información que cada token aporta
+
+La atención calcula: qué tanto coincide cada Query con cada Key (producto punto), usa softmax para convertir eso en pesos, y pondera los Values con esos pesos.
+
+**MLP (Multi-Layer Perceptron):** red feed-forward de 2 capas que sigue a la atención, implementado en UCAN como `SGFN` (`Spatial-Gate Feed-Forward Network`, línea 435). Su estructura:
+```python
+fc1 → Linear(in_features, hidden_features)    # expande
+sg  → SpatialGate (conv 7×7 depthwise + GELU) # gate espacial
+fc2 → Linear(hidden_features//2, out_features) # comprime
+```
+
 **2. `HybridBlock` (línea 854)** — Sigue la estructura clásica Transformer → Atención + MLP + residual:
 ```
                     entrada
@@ -86,15 +100,15 @@ Sigue la fórmula estándar: `Attention(Q,K,V) = softmax(QK^T/√d + bias) V`
 ```
 
 **3. `BasicLayer` (línea 972)** — La capa Transformer completa que orquesta:
-- `attn1`: High Performance Attention con Flash Attention (ventana 32×32)
-- `self.blocks`: 4 HybridBlocks (Window-MHSA + Dual Fusion + MLP)
-- `mbconv`: MBConv entre bloques
+- `attn1`: **HPA (High Performance Attention)** con Flash Attention (ventana 32×32)
+- `self.blocks`: 4 HybridBlocks (**W-MHSA** + **Dual Fusion** + **MLP**)
+- `mbconv`: **MBConv (Mobile Block Convolution)** entre bloques, Conv1×1 → DWConv 3×3 → Conv1×1
 
 **En tu video di:** *"El módulo Transformer se implementa en 3 niveles: `WindowsAttention` hace la atención por ventanas (QKV → softmax → V), `HybridBlock` compone atención + MLP con residual como un bloque Transformer estándar, y `BasicLayer` apila 4 HybridBlocks más atención global Flash."*
 
 ### Hedgehog Feature Map
 
-Usada en SDFL/DFRL para linear attention (`ucan_arch.py:15`). Implementa el mapeo:
+Usada en **SDFL (Self Dual Fusion Layer)** / **DFRL (Dual Fusion Reuse Layer)** para atención lineal (`ucan_arch.py:15`). Implementa el mapeo:
 ```
 ω(x) = [exp(Wx+b), exp(-Wx-b)]  → softmax
 ```
@@ -104,7 +118,7 @@ Entrenable, inicializado como identidad.
 
 ## 2. Configuración de hiperparámetros
 
-### Archivos YAML de configuración
+### Archivos YAML (YAML Ain't Markup Language) de configuración
 
 `options/Test/test_UCAN_x2.yml`, `test_UCAN_x3.yml`, `test_UCAN_x4.yml`
 
@@ -161,15 +175,15 @@ class UCAN(nn.Module):
 | `img_size` | 64 | 59 | Tamaño de parche para patch_embed |
 | `img_range` | 1.0 | 60 | Rango de imagen [0,1] |
 | `window_size` | 16 | 61 | Tamaño de ventana de atención |
-| `conv_depth` | 5 | 62 | Bloques LKSA + SGFN por BasicLayer |
+| `conv_depth` | 5 | 62 | Bloques **LKSA (Large-Kernel Spatial Attention)** + **SGFN** por BasicLayer |
 | `share` | `['N','F','N','F']` | 63 | Esquema de compartición de atención |
 | `embed_dim` | 48 | 64 | Dimensión del embedding (canales) |
 | `mlp_ratio` | 1 | 65 | Factor de expansión del MLP |
 | `mhsa_num_heads` | 2 | 66 | Cabezas en Window-MHSA |
-| `dfl_num_heads` | 1 | 67 | Cabezas en Dual Fusion Layer |
+| `dfl_num_heads` | 1 | 67 | Cabezas en **DFL (Dual Fusion Layer)** |
 | `use_checkpoint` | `False` | 68 | Gradient checkpointing |
 | `upsampler` | `pixelshuffledirect` | 69 | Módulo de upsampling |
-| `resi_connection` | `1conv` | 70 | Conexión residual (Conv1x1) |
+| `resi_connection` | `1conv` | 70 | Conexión residual (**ESA**: Enhanced Spatial Attention + Conv1x1) |
 
 ### Hiperparámetros en el código (`ucan_arch.py:1248-1266`, clase `UCAN`)
 
@@ -192,7 +206,7 @@ def __init__(self,
 | Parámetro | Valor | Descripción |
 |---|---|---|
 | `crop_border` | 2/3/4 (según scale) | Pixeles del borde a ignorar en métricas |
-| `test_y_channel` | `True` | Evaluar en canal Y (YCbCr) |
+| `test_y_channel` | `True` | Evaluar en canal Y (espacio YCbCr — luminancia) |
 | `save_img` | `True` | Guardar imágenes resultado |
 
 ---
@@ -203,7 +217,7 @@ def __init__(self,
 
 Definidos en `options/Test/test_UCAN_x4.yml:8-52`
 
-| Dataset | GT (HR) | LQ (LR) | Template |
+| Dataset | **GT (Ground Truth = verdad absoluta) / HR (High Resolution = alta resolución)** | **LQ (Low Quality = baja calidad) / LR (Low Resolution = baja resolución)** | Template |
 |---|---|---|---|
 | **Set5** | `datasets/SR/Set5/HR` | `datasets/SR/Set5/LR_bicubic/X4` | `{}x4` |
 | **Set14** | `datasets/SR/Set14/HR` | `datasets/SR/Set14/LR_bicubic/X4` | `{}x4` |
@@ -220,9 +234,9 @@ Crea la estructura: `datasets/SR/{Set5,Set14,B100,Urban100}/HR/` y `LR_bicubic/X
 
 ### PairedImageDataset (`basicsr/data/paired_image_dataset.py:13`)
 
-- Lee pares de imágenes LR (baja resolución) y GT (alta resolución)
+- Lee pares de imágenes **LR (Low Resolution)** y **GT (Ground Truth / alta resolución)**
 - Durante **train**: random crop, flip, rotación
-- Durante **test**: solo carga y convierte a tensor (BGR→RGB, HWC→CHW, normalización [0,1])
+- Durante **test**: solo carga y convierte a tensor (**BGR→RGB**, **HWC→CHW** — reordena dimensiones, normalización [0,1])
 - Soporta backend: `disk`, `lmdb`, `meta_info_file`
 
 ### Pipeline de test (`basicsr/test.py`)
@@ -251,11 +265,11 @@ CUDA_VISIBLE_DEVICES="" python infer.py imagen_lr.jpg resultado.png
 - **Título completo:** _UCAN: Unified Convolutional Attention Network for Expansive Receptive Fields in Lightweight Super-Resolution_
 - **Autores originales:** Hokiyoshi (repositorio GitHub: `hokiyoshi/UCAN`)
 - **Innovaciones clave:**
-  - **Atención semi-compartida**: 4 Residual Groups donde RG2 reusa atención de RG1, y RG4 reusa de RG3. Reduce cómputo sin perder calidad.
-  - **Hedgehog Attention**: Mapeo de features lineal que evita colapso de rango en atención linear.
-  - **Large Kernel Distillation (LKD)**: Divide canales en finos (1/4) y gruesos (3/4 bypass). Solo procesa finos con convoluciones dilatadas 23×23.
+  - **Atención semi-compartida**: 4 **RG (Residual Groups)** donde RG2 reusa atención de RG1, y RG4 reusa de RG3. Reduce cómputo sin perder calidad.
+  - **Hedgehog Attention**: Mapeo de features lineal que evita colapso de rango en atención lineal.
+  - **LKD (Large Kernel Distillation)**: Divide canales en finos (1/4) y gruesos (3/4 bypass). Solo procesa finos con convoluciones dilatadas 23×23.
   - **Dual Fusion Layer**: Combina atención espacial (Hedgehog) + atención de canales en cada HybridBlock.
-  - **FourierEmbedding**: RoPE con coeficientes de Fourier aprendibles.
+  - **FourierEmbedding**: **RoPE (Rotary Position Embedding)** con coeficientes de Fourier aprendibles.
 
 ### Adecuación para CPU (trabajo realizado)
 
@@ -300,6 +314,9 @@ curl -L -o experiments/pretrained_models/weight_final_x4.pth \
 ```
 
 #### e) Parámetros de evaluación (PSNR / SSIM)
+
+**PSNR (Peak Signal-to-Noise Ratio)** — relación señal-ruido máxima en dB.  
+**SSIM (Structural Similarity Index Measure)** — índice de similitud estructural.
 
 | Dataset | PSNR (dB) | SSIM |
 |---|---|---|
