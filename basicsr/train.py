@@ -15,9 +15,9 @@ from basicsr.utils.options import copy_opt_file, dict2str, parse_options
 
 
 def init_tb_loggers(opt):
-    # initialize wandb logger before tensorboard logger to allow proper sync
+    """Inicializa los loggers de TensorBoard y WandB para monitorear el entrenamiento."""
     if (opt['logger'].get('wandb') is not None) and (opt['logger']['wandb'].get('project')
-                                                     is not None) and ('debug' not in opt['name']):
+                                                      is not None) and ('debug' not in opt['name']):
         assert opt['logger'].get('use_tb_logger') is True, ('should turn on tensorboard when using wandb')
         init_wandb_logger(opt)
     tb_logger = None
@@ -27,7 +27,7 @@ def init_tb_loggers(opt):
 
 
 def create_train_val_dataloader(opt, logger):
-    # create train and val dataloaders
+    """Crea los dataloaders de entrenamiento y validación a partir de la config YAML."""
     train_loader, val_loaders = None, []
     for phase, dataset_opt in opt['datasets'].items():
         if phase == 'train':
@@ -66,6 +66,7 @@ def create_train_val_dataloader(opt, logger):
 
 
 def load_resume_state(opt):
+    """Carga el estado de un entrenamiento anterior para reanudarlo (optimizer, scheduler, iter)."""
     resume_state_path = None
     if opt['auto_resume']:
         state_path = osp.join('experiments', opt['name'], 'training_states')
@@ -89,6 +90,8 @@ def load_resume_state(opt):
 
 
 def train_pipeline(root_path):
+    """Bucle principal de entrenamiento: parsea args, crea modelo/dataloaders, itera sobre los datos,
+    calcula pérdidas, retropropaga, guarda checkpoints y corre validación periódicamente."""
     # parse options, set distributed setting, set ramdom seed
     opt, args = parse_options(root_path, is_train=True)
     opt['root_path'] = root_path

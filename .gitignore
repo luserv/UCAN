@@ -12,6 +12,10 @@ wandb/
 *.pth
 *.zip
 
+*.png
+
+mymedia/
+
 docs/api
 scripts/__init__.py
 
