@@ -47,6 +47,51 @@ Cada HybridBlock (`ucan_arch.py:854`) contiene:
    - *Channel branch*: `softmax(QᵀK)V` — atención sobre canales
 3. **Scale + residual connections** con `layer_scale = 1e-4`
 
+### ¿Cómo señalar la implementación del Transformer en el código?
+
+Para demostrar al ingeniero dónde está implementado el Transformer, muestra estos 3 puntos en `basicsr/archs/ucan_arch.py`:
+
+**1. `WindowsAttention` (línea 759)** — El núcleo Transformer: QKV projection + attention dentro de ventanas:
+```python
+class WindowsAttention(nn.Module):
+    def __init__(self, dim, window_size, num_heads, ...):
+        self.to_qkv = nn.Linear(dim, dim * 3)  # genera Q, K, V
+        ...
+    def forward(self, x, mask=None):
+        q, k, v = self.to_qkv(x).chunk(3, dim=-1)
+        # scaled dot-product attention dentro de cada ventana 16×16
+        attn = (q @ k.transpose(-2, -1)) + relative_position_bias
+        attn = self.softmax(attn)
+        x = (attn @ v)
+```
+Sigue la fórmula estándar: `Attention(Q,K,V) = softmax(QK^T/√d + bias) V`
+
+**2. `HybridBlock` (línea 854)** — Sigue la estructura clásica Transformer → Atención + MLP + residual:
+```
+                    entrada
+                       │
+                  ┌────┴────┐
+                  │  Norm1  │ ← LayerNorm
+                  │ W-MHSA  │ ← Window Multi-Head Self-Attention
+                  │  + MLP  │ ← SGFN (Spatial-Gate FFN)
+                  └────┬────┘
+                  scale + residual
+                       │
+                  ┌────┴────┐
+                  │ L_attn  │ ← Dual Fusion Layer (atención global)
+                  └────┬────┘
+                  Norm + residual + scale
+                       │
+                    salida
+```
+
+**3. `BasicLayer` (línea 972)** — La capa Transformer completa que orquesta:
+- `attn1`: High Performance Attention con Flash Attention (ventana 32×32)
+- `self.blocks`: 4 HybridBlocks (Window-MHSA + Dual Fusion + MLP)
+- `mbconv`: MBConv entre bloques
+
+**En tu video di:** *"El módulo Transformer se implementa en 3 niveles: `WindowsAttention` hace la atención por ventanas (QKV → softmax → V), `HybridBlock` compone atención + MLP con residual como un bloque Transformer estándar, y `BasicLayer` apila 4 HybridBlocks más atención global Flash."*
+
 ### Hedgehog Feature Map
 
 Usada en SDFL/DFRL para linear attention (`ucan_arch.py:15`). Implementa el mapeo:
@@ -62,6 +107,49 @@ Entrenable, inicializado como identidad.
 ### Archivos YAML de configuración
 
 `options/Test/test_UCAN_x2.yml`, `test_UCAN_x3.yml`, `test_UCAN_x4.yml`
+
+### ¿Dónde están las configuraciones de los hiperparámetros?
+
+Hay **2 lugares** donde se definen los hiperparámetros:
+
+**A) Archivos YAML (sobreescriben defaults) → `options/Test/test_UCAN_x4.yml:55-70`**
+
+```yaml
+network_g:
+  type: UCAN
+  upscale: 4           # factor de super-resolución
+  window_size: 16      # tamaño de ventana de atención
+  embed_dim: 48        # canales del embedding
+  mlp_ratio: 1         # factor de expansión MLP
+  mhsa_num_heads: 2    # cabezas de atención
+  dfl_num_heads: 1     # cabezas del Dual Fusion Layer
+  conv_depth: 5        # bloques convolucionales por grupo
+  share: ['N','F','N','F']  # esquema de compartición
+```
+
+Estos valores se cargan en `basicsr/utils/options.py` y se pasan al constructor de `UCAN`.
+
+**B) Constructor de la clase UCAN (defaults) → `basicsr/archs/ucan_arch.py:1248-1266`**
+
+```python
+class UCAN(nn.Module):
+    def __init__(self,
+                 img_size=64, patch_size=1, in_chans=3,
+                 embed_dim=96,        # ← default, YAML lo cambia a 48
+                 drop_rate=0.,
+                 window_size=8,       # ← default, YAML lo cambia a 16
+                 mlp_ratio=1.5,       # ← default, YAML lo cambia a 1
+                 conv_depth=5,
+                 share=None,          # → ['N','F','N','F']
+                 mhsa_num_heads=2,
+                 dfl_num_heads=1,
+                 upscale=2,
+                 img_range=1.,
+                 upsampler='pixelshuffledirect',
+                 resi_connection='1conv')
+```
+
+**En tu video di:** *"Los hiperparámetros se configuran en `options/Test/test_UCAN_x4.yml` líneas 55 a 70, donde se definen `window_size=16`, `embed_dim=48`, `mlp_ratio=1`, etc. Además, la clase `UCAN` en `ucan_arch.py` línea 1248 tiene los valores por defecto que el YAML sobreescribe."*
 
 ### Hiperparámetros de red (`network_g`)
 
